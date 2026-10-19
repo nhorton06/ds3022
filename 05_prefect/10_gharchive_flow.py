@@ -10,21 +10,36 @@ URL = "https://data.gharchive.org/2025-01-01-{hour}.json.gz"
 
 @task(retries=3)
 def count_events_for_hour(hour):
-    # stream one hourly file and return {event_type: count}
-    # use a Counter named "counts" and pull out the "type"
-    # for each line in the stream
-    with requests.get(URL.format(hour=hour), stream=True) as r:
-        # do things
-        print("nothing")
+    counts = Counter()
+    try:
+        with requests.get(URL.format(hour=hour), stream=True, timeout=60) as r:
+            r.raise_for_status()  # fail on HTTP errors so retries=3 kicks in
+            # decompress the gzip stream as it downloads, one line (event) at a time
+            with gzip.GzipFile(fileobj=r.raw) as gz:
+                for line in gz:
+                    counts[json.loads(line)["type"]] += 1
+    except Exception as e:
+        # report the failure, then re-raise so Prefect marks the task failed and retries
+        print(f"hour {hour} failed: {e}")
+        raise
     print(f"hour {hour}: {counts.total()} events")
     return dict(counts)
 
 
 @task
 def combine_counts(hourly_counts):
-    # Total counts by type and order them
-    # print those to screen and return them
-    pass
+    try:
+        totals = Counter()
+        for hc in hourly_counts:
+            totals.update(hc)  # add each hour's {event_type: count} into the running total
+        # most_common() sorts by count, highest first; dict keeps that order
+        ordered = dict(totals.most_common())
+    except Exception as e:
+        print(f"combine_counts failed: {e}")
+        raise
+    for event_type, count in ordered.items():
+        print(f"{event_type}: {count}")
+    return ordered
 
 
 @flow(log_prints=True)
